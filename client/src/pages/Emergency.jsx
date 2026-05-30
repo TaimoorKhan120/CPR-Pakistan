@@ -92,6 +92,17 @@ export default function Emergency() {
     );
   };
 
+  const [locationDenied, setLocationDenied] = useState(false);
+
+  // Check permission state on mount
+  useEffect(() => {
+    if (!navigator.permissions) return;
+    navigator.permissions.query({ name: 'geolocation' }).then((result) => {
+      if (result.state === 'denied') setLocationDenied(true);
+      result.onchange = () => setLocationDenied(result.state === 'denied');
+    });
+  }, []);
+
   useEffect(() => {
     return () => {
       if (locationWatchRef.current) navigator.geolocation.clearWatch(locationWatchRef.current);
@@ -100,6 +111,7 @@ export default function Emergency() {
 
   const sendAlert = async () => {
     setError('');
+    setLocationDenied(false);
     setState('locating');
     try {
       const pos = await new Promise((resolve, reject) =>
@@ -131,8 +143,12 @@ export default function Emergency() {
       setState('pending');
       socketRef.current?.emit('emergency_request', { requestId: data.request.id });
     } catch (err) {
-      setError(err.code === 1 ? 'Location access denied. Please enable GPS.' : 'Failed to get location. Please try again.');
       setState('idle');
+      if (err.code === 1) {
+        setLocationDenied(true);
+      } else {
+        setError('Could not get location. Please try again.');
+      }
     }
   };
 
@@ -164,6 +180,64 @@ export default function Emergency() {
         <p className="text-gray-500 mt-2">Thank you for using CPR Pakistan</p>
         <p className="urdu text-gray-500 mt-1">شکریہ</p>
         <button onClick={() => setState('idle')} className="mt-6 bg-pakistan-green text-white px-6 py-3 rounded-xl font-semibold">Back to Home</button>
+      </div>
+    );
+  }
+
+  if (locationDenied) {
+    return (
+      <div className="p-6 space-y-4">
+        <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-5 text-center">
+          <div className="text-5xl mb-3">📍</div>
+          <h2 className="text-lg font-bold text-red-700">Location Access Blocked</h2>
+          <p className="urdu text-red-600 text-sm mt-1">لوکیشن کی اجازت بند ہے</p>
+          <p className="text-sm text-gray-600 mt-3">
+            CPR Pakistan needs your location to send alerts to nearby responders. Your browser has blocked it.
+          </p>
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-2xl p-4 space-y-3">
+          <h3 className="font-bold text-sm text-gray-800">How to fix it:</h3>
+
+          <div className="space-y-3 text-sm text-gray-700">
+            <div className="flex gap-3 items-start">
+              <span className="w-6 h-6 bg-pakistan-green text-white rounded-full flex items-center justify-center text-xs font-bold shrink-0">1</span>
+              <p>Click the <strong>🔒 lock icon</strong> in your browser's address bar (next to <code className="bg-gray-100 px-1 rounded">localhost:4000</code>)</p>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="w-6 h-6 bg-pakistan-green text-white rounded-full flex items-center justify-center text-xs font-bold shrink-0">2</span>
+              <p>Find <strong>Location</strong> and change it from <strong>Block</strong> to <strong>Allow</strong></p>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="w-6 h-6 bg-pakistan-green text-white rounded-full flex items-center justify-center text-xs font-bold shrink-0">3</span>
+              <p>Reload the page and tap Send Alert again</p>
+            </div>
+          </div>
+
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-2">
+            <p className="text-xs text-amber-700 font-medium">Safari users:</p>
+            <p className="text-xs text-amber-600 mt-0.5">Safari menu → Settings for This Website → Location → Allow</p>
+          </div>
+        </div>
+
+        <button
+          onClick={() => { setLocationDenied(false); window.location.reload(); }}
+          className="w-full bg-pakistan-green text-white py-3 rounded-xl font-semibold"
+        >
+          I've enabled location — Reload
+        </button>
+
+        <div className="grid grid-cols-2 gap-3">
+          <a href="tel:1122" className="bg-emergency text-white rounded-xl p-3 flex items-center justify-center gap-2 font-bold text-sm">
+            📞 Call 1122
+          </a>
+          <button
+            onClick={() => window.open('https://wa.me/?text=' + encodeURIComponent('🚨 EMERGENCY! Please help!'), '_blank')}
+            className="bg-[#25D366] text-white rounded-xl p-3 flex items-center justify-center gap-2 font-bold text-sm"
+          >
+            💬 WhatsApp
+          </button>
+        </div>
       </div>
     );
   }
