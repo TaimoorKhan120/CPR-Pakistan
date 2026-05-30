@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useSocket } from '../contexts/SocketContext';
 import EmergencyMap from '../components/EmergencyMap';
+import Chat from '../components/Chat';
+
+const RADIUS_OPTIONS = [0.5, 1, 2, 3, 5, 7, 10, 15, 20];
 
 export default function ProviderDashboard() {
   const { user, token, updateUser } = useAuth();
@@ -10,10 +13,12 @@ export default function ProviderDashboard() {
   const [activeRequest, setActiveRequest] = useState(null);
   const [myLocation, setMyLocation] = useState(null);
   const [toggling, setToggling] = useState(false);
+  const [savingRadius, setSavingRadius] = useState(false);
   const locationWatchRef = useRef(null);
   const socketRef = useRef(socket);
   useEffect(() => { socketRef.current = socket; }, [socket]);
 
+  // Start GPS watch immediately on mount
   useEffect(() => {
     if (locationWatchRef.current) return;
     locationWatchRef.current = navigator.geolocation.watchPosition(
@@ -41,6 +46,13 @@ export default function ProviderDashboard() {
         if (prev.find((a) => a.id === alert.id)) return prev;
         return [alert, ...prev].slice(0, 10);
       });
+      // Browser notification
+      if (Notification.permission === 'granted') {
+        new Notification('🚨 CPR Pakistan — Emergency Nearby!', {
+          body: `${alert.requester_name} needs help • ${alert.distance} km away • ETA ~${alert.eta} min`,
+          icon: '/favicon.ico',
+        });
+      }
     };
 
     const onCancelled = ({ requestId }) => {
@@ -50,15 +62,22 @@ export default function ProviderDashboard() {
 
     socket.on('new_emergency', onNewEmergency);
     socket.on('request_cancelled', onCancelled);
-
     return () => {
       socket.off('new_emergency', onNewEmergency);
       socket.off('request_cancelled', onCancelled);
     };
   }, [socket, activeRequest]);
 
+  // Request notification permission when provider turns available
+  const requestNotificationPermission = async () => {
+    if (Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+  };
+
   const toggleAvailability = async () => {
     setToggling(true);
+    if (!user.is_available) await requestNotificationPermission();
     try {
       const res = await fetch('/api/auth/availability', {
         method: 'PATCH',
@@ -72,39 +91,36 @@ export default function ProviderDashboard() {
     }
   };
 
-  const acceptAlert = async (alert) => {
+  const setRadius = async (r) => {
+    setSavingRadius(true);
     try {
-      if (socketRef.current) {
-        socketRef.current.emit('accept_request', { requestId: alert.id });
-      } else {
-        const res = await fetch(`/api/emergency/request/${alert.id}/accept`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-      }
-      setActiveRequest(alert);
-      setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
-    } catch {
-      // ignore
+      const res = await fetch('/api/auth/radius', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ radius: r }),
+      });
+      if (res.ok) updateUser({ response_radius: r });
+    } finally {
+      setSavingRadius(false);
     }
   };
 
-  const declineAlert = (alertId) => {
-    setAlerts((prev) => prev.filter((a) => a.id !== alertId));
+  const acceptAlert = async (alert) => {
+    try {
+      socketRef.current
+        ? socketRef.current.emit('accept_request', { requestId: alert.id })
+        : await fetch(`/api/emergency/request/${alert.id}/accept`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      setActiveRequest(alert);
+      setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
+    } catch {}
   };
+
+  const declineAlert = (id) => setAlerts((prev) => prev.filter((a) => a.id !== id));
 
   const completeRequest = async () => {
     if (!activeRequest) return;
-    await fetch(`/api/emergency/request/${activeRequest.id}/complete`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    await fetch(`/api/emergency/request/${activeRequest.id}/complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
     setActiveRequest(null);
-  };
-
-  const openMaps = (lat, lng) => {
-    window.open(`https://maps.google.com/?q=${lat},${lng}`, '_blank');
   };
 
   if (user?.role !== 'provider') {
@@ -118,14 +134,13 @@ export default function ProviderDashboard() {
 
   return (
     <div className="p-4 space-y-4">
-      {/* Status toggle */}
+      {/* Availability toggle */}
       <div className={`rounded-2xl p-4 border-2 ${user.is_available ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-gray-50'}`}>
         <div className="flex items-center justify-between">
           <div>
             <div className="font-semibold">{user.is_available ? '🟢 Available for Emergencies' : '🔴 Off Duty'}</div>
-            <div className="urdu text-xs text-gray-500 mt-1">
-              {user.is_available ? 'آپ الرٹ وصول کر رہے ہیں' : 'الرٹ بند ہیں'}
-            </div>
+            <div className="urdu text-xs text-gray-500 mt-0.5">{user.is_available ? 'آپ الرٹ وصول کر رہے ہیں' : 'الرٹ بند ہیں'}</div>
+            {myLocation && <div className="text-xs text-gray-400 mt-1">📍 GPS active</div>}
           </div>
           <button
             onClick={toggleAvailability}
@@ -135,9 +150,34 @@ export default function ProviderDashboard() {
             <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform shadow ${user.is_available ? 'translate-x-6' : 'translate-x-1'}`} />
           </button>
         </div>
-        {myLocation && (
-          <p className="text-xs text-gray-500 mt-2">📍 Location active — sharing with network</p>
-        )}
+      </div>
+
+      {/* Response radius selector */}
+      <div className="bg-white rounded-2xl border border-gray-200 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="font-semibold text-sm">📡 Response Radius</div>
+            <div className="urdu text-xs text-gray-500">جواب دینے کی حد</div>
+          </div>
+          <div className="text-pakistan-green font-bold text-sm">{user.response_radius || 5} km</div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {RADIUS_OPTIONS.map((r) => (
+            <button
+              key={r}
+              onClick={() => setRadius(r)}
+              disabled={savingRadius}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 transition-all ${
+                (user.response_radius || 5) === r
+                  ? 'border-pakistan-green bg-pakistan-green text-white'
+                  : 'border-gray-200 text-gray-600 bg-white'
+              }`}
+            >
+              {r < 1 ? `${r * 1000}m` : `${r}km`}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-gray-400 mt-2">You'll only receive alerts within this radius of your location</p>
       </div>
 
       {/* Active request */}
@@ -156,21 +196,16 @@ export default function ProviderDashboard() {
           <div className="p-4 space-y-3">
             <div>
               <div className="text-sm font-semibold">Patient: {activeRequest.requester_name}</div>
-              <div className="text-xs text-gray-500 mt-0.5">
-                Distance: ~{activeRequest.distance} km away
-              </div>
+              <div className="text-xs text-gray-500">~{activeRequest.distance} km • ETA ~{activeRequest.eta} min</div>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <button
-                onClick={() => openMaps(activeRequest.requester_lat, activeRequest.requester_lng)}
+                onClick={() => window.open(`https://maps.google.com/?q=${activeRequest.requester_lat},${activeRequest.requester_lng}`, '_blank')}
                 className="bg-blue-600 text-white rounded-xl py-2.5 text-sm font-semibold"
               >
                 🗺️ Navigate
               </button>
-              <button
-                onClick={completeRequest}
-                className="bg-pakistan-green text-white rounded-xl py-2.5 text-sm font-semibold"
-              >
+              <button onClick={completeRequest} className="bg-pakistan-green text-white rounded-xl py-2.5 text-sm font-semibold">
                 ✅ Complete
               </button>
             </div>
@@ -182,9 +217,7 @@ export default function ProviderDashboard() {
       <div>
         <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
           <span>Incoming Alerts</span>
-          {alerts.length > 0 && (
-            <span className="bg-emergency text-white text-xs px-2 py-0.5 rounded-full">{alerts.length}</span>
-          )}
+          {alerts.length > 0 && <span className="bg-emergency text-white text-xs px-2 py-0.5 rounded-full">{alerts.length}</span>}
         </h3>
 
         {alerts.length === 0 && !activeRequest && (
@@ -192,9 +225,7 @@ export default function ProviderDashboard() {
             <div className="text-5xl mb-3">📡</div>
             <p className="text-sm font-medium">No active alerts</p>
             <p className="urdu text-xs mt-1">کوئی الرٹ نہیں</p>
-            {!user.is_available && (
-              <p className="text-xs text-amber-600 mt-3">Turn on availability to receive alerts</p>
-            )}
+            {!user.is_available && <p className="text-xs text-amber-600 mt-3">Turn on availability to receive alerts</p>}
           </div>
         )}
 
@@ -203,40 +234,37 @@ export default function ProviderDashboard() {
             <div key={alert.id} className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 shadow-sm">
               <div className="flex items-start justify-between mb-3">
                 <div>
-                  <div className="font-bold text-red-700 text-sm flex items-center gap-1">
-                    <span>🚨</span>
-                    <span>Emergency Alert!</span>
-                  </div>
+                  <div className="font-bold text-red-700 text-sm">🚨 Emergency Alert!</div>
                   <div className="urdu text-red-600 text-xs mt-0.5">ایمرجنسی الرٹ</div>
                   <div className="text-xs text-gray-600 mt-1">
-                    From: {alert.requester_name} • ~{alert.distance} km away
+                    {alert.requester_name} • {alert.distance} km away
+                    {alert.eta && <span className="ml-2 font-semibold text-pakistan-green">~{alert.eta} min ETA</span>}
                   </div>
                 </div>
                 <button
-                  onClick={() => openMaps(alert.requester_lat, alert.requester_lng)}
+                  onClick={() => window.open(`https://maps.google.com/?q=${alert.requester_lat},${alert.requester_lng}`, '_blank')}
                   className="text-blue-600 text-xs underline"
                 >
-                  View Map
+                  Map
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => acceptAlert(alert)}
-                  className="bg-pakistan-green text-white rounded-xl py-2.5 text-sm font-bold"
-                >
-                  ✅ Accept
-                </button>
-                <button
-                  onClick={() => declineAlert(alert.id)}
-                  className="bg-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium"
-                >
-                  Decline
-                </button>
+                <button onClick={() => acceptAlert(alert)} className="bg-pakistan-green text-white rounded-xl py-2.5 text-sm font-bold">✅ Accept</button>
+                <button onClick={() => declineAlert(alert.id)} className="bg-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium">Decline</button>
               </div>
             </div>
           ))}
         </div>
       </div>
+
+      {/* Floating chat — when actively responding */}
+      {activeRequest?.id && (
+        <Chat
+          requestId={activeRequest.id}
+          otherName={activeRequest.requester_name}
+          otherPhone={activeRequest.requester_phone}
+        />
+      )}
     </div>
   );
 }

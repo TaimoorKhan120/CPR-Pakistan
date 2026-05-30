@@ -7,6 +7,8 @@ const authMiddleware = require('../middleware/auth');
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'cpr-pakistan-secret-2024';
 
+const SAFE_FIELDS = 'id, name, phone, role, city, is_available, response_radius, lat, lng';
+
 router.post('/register', async (req, res) => {
   try {
     const { name, phone, password, role, city } = req.body;
@@ -23,7 +25,7 @@ router.post('/register', async (req, res) => {
       'INSERT INTO users (name, phone, password, role, city) VALUES (?, ?, ?, ?, ?)'
     ).run(name, phone, hashed, role, city);
 
-    const user = db.prepare('SELECT id, name, phone, role, city, is_available FROM users WHERE id = ?').get(result.lastInsertRowid);
+    const user = db.prepare(`SELECT ${SAFE_FIELDS} FROM users WHERE id = ?`).get(result.lastInsertRowid);
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     res.json({ token, user });
   } catch (err) {
@@ -51,7 +53,7 @@ router.post('/login', async (req, res) => {
 });
 
 router.get('/me', authMiddleware, (req, res) => {
-  const user = db.prepare('SELECT id, name, phone, role, city, is_available, lat, lng FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare(`SELECT ${SAFE_FIELDS} FROM users WHERE id = ?`).get(req.user.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json(user);
 });
@@ -60,6 +62,14 @@ router.patch('/availability', authMiddleware, (req, res) => {
   const { is_available } = req.body;
   db.prepare('UPDATE users SET is_available = ? WHERE id = ?').run(is_available ? 1 : 0, req.user.id);
   res.json({ success: true, is_available: !!is_available });
+});
+
+router.patch('/radius', authMiddleware, (req, res) => {
+  const { radius } = req.body;
+  const r = parseFloat(radius);
+  if (!r || r < 0.5 || r > 25) return res.status(400).json({ error: 'Invalid radius' });
+  db.prepare('UPDATE users SET response_radius = ? WHERE id = ?').run(r, req.user.id);
+  res.json({ success: true, response_radius: r });
 });
 
 module.exports = router;
